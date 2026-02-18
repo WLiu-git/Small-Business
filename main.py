@@ -333,27 +333,43 @@ INDEX_HTML = """
     #wrap { display: flex; height: 100%; }
     #map { flex: 1; }
     #panel {
-      width: 380px; padding: 14px; font-family: Arial, sans-serif;
+      width: 420px; padding: 14px; font-family: Arial, sans-serif;
       border-left: 1px solid #ddd; overflow: auto;
+      background: #fafafa;
     }
-    pre { white-space: pre-wrap; word-break: break-word; }
     .muted { color: #666; font-size: 12px; }
+    .card {
+      background: #fff; border: 1px solid #eee; border-radius: 10px;
+      padding: 12px; margin: 10px 0;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .card h3 { margin: 0 0 10px 0; font-size: 14px; }
+    table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.kv td { padding: 6px 4px; vertical-align: top; border-top: 1px solid #f2f2f2; }
+    table.kv td.key { width: 55%; color: #333; }
+    table.kv td.val { text-align: right; color: #111; font-weight: 600; }
+    ul { margin: 6px 0 0 18px; padding: 0; }
+    li { margin: 4px 0; font-size: 13px; }
+    .warn { color: #b00020; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .ok { color: #0b6b0b; font-size: 12px; }
   </style>
 </head>
 <body>
 <div id="wrap">
   <div id="map"></div>
   <div id="panel">
-    <h2>Hover Data</h2>
+    <h2 style="margin:0 0 6px 0;">Hover Data</h2>
     <div id="meta" class="muted">Move mouse on map...</div>
-    <pre id="out"></pre>
+
+    <div id="content"></div>
+    <div id="errors" class="warn"></div>
   </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   const map = L.map('map').setView([39.2904, -76.6122], 13); // Baltimore
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {  // ✅ HTTPS
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
@@ -361,33 +377,178 @@ INDEX_HTML = """
   let timer = null;
   let lastKey = null;
 
+  function fmtNA(v) {
+    if (v === null || v === undefined) return "N/A";
+    return String(v);
+  }
+  function fmtInt(v) {
+    if (v === null || v === undefined) return "N/A";
+    const n = Number(v);
+    if (Number.isNaN(n)) return "N/A";
+    return n.toLocaleString();
+  }
+  function fmtMoney(v) {
+    if (v === null || v === undefined) return "N/A";
+    const n = Number(v);
+    if (Number.isNaN(n)) return "N/A";
+    return "$" + n.toLocaleString();
+  }
+
+  function makeCard(title, rows) {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const h = document.createElement("h3");
+    h.textContent = title;
+    card.appendChild(h);
+
+    const table = document.createElement("table");
+    table.className = "kv";
+
+    for (const [k, v] of rows) {
+      const tr = document.createElement("tr");
+
+      const tdK = document.createElement("td");
+      tdK.className = "key";
+      tdK.textContent = k;
+
+      const tdV = document.createElement("td");
+      tdV.className = "val";
+      tdV.textContent = v;
+
+      tr.appendChild(tdK);
+      tr.appendChild(tdV);
+      table.appendChild(tr);
+    }
+
+    card.appendChild(table);
+    return card;
+  }
+
+  function renderFeatures(j) {
+    const content = document.getElementById("content");
+    const errors = document.getElementById("errors");
+    content.innerHTML = "";
+    errors.textContent = "";
+
+    // Census
+    const c = j.census || {};
+    content.appendChild(makeCard("Census (Population & Income)", [
+      ["Population", fmtInt(c.population)],
+      ["Median Household Income", fmtMoney(c.median_household_income)],
+      ["State FIPS", fmtNA(c.state_fips)],
+      ["County FIPS", fmtNA(c.county_fips)],
+      ["Tract", fmtNA(c.tract)],
+    ]));
+
+    // POI
+    const p = j.poi || {};
+    content.appendChild(makeCard("POI Density (within radius)", [
+      ["Restaurants", fmtInt(p.restaurants)],
+      ["Bars", fmtInt(p.bars)],
+      ["Cafes", fmtInt(p.cafes)],
+      ["Shops", fmtInt(p.shops)],
+    ]));
+
+    // Crime
+    const crime = j.crime || {};
+    const totalCrime = crime.total_last_3mo;
+    const cardCrime = document.createElement("div");
+    cardCrime.className = "card";
+
+    const h = document.createElement("h3");
+    h.textContent = "Crime (last 3 months)";
+    cardCrime.appendChild(h);
+
+    const table = document.createElement("table");
+    table.className = "kv";
+    const tr = document.createElement("tr");
+    const tdK = document.createElement("td");
+    tdK.className = "key";
+    tdK.textContent = "Total incidents";
+    const tdV = document.createElement("td");
+    tdV.className = "val";
+    tdV.textContent = fmtInt(totalCrime);
+    tr.appendChild(tdK);
+    tr.appendChild(tdV);
+    table.appendChild(tr);
+    cardCrime.appendChild(table);
+
+    // Top types
+    const byType = crime.by_type || {};
+    const entries = Object.entries(byType).sort((a,b) => (b[1]||0) - (a[1]||0)).slice(0, 8);
+    if (entries.length > 0) {
+      const sub = document.createElement("div");
+      sub.className = "muted";
+      sub.style.marginTop = "8px";
+      sub.textContent = "Top types:";
+      cardCrime.appendChild(sub);
+
+      const ul = document.createElement("ul");
+      for (const [t, ct] of entries) {
+        const li = document.createElement("li");
+        li.textContent = `${t}: ${fmtInt(ct)}`;
+        ul.appendChild(li);
+      }
+      cardCrime.appendChild(ul);
+    }
+    content.appendChild(cardCrime);
+
+    // Transit
+    const t = j.transit || {};
+    content.appendChild(makeCard("Transit (MVP)", [
+      ["Nearest stop (m)", fmtInt(t.nearest_stop_m)],
+      ["Stops within radius", fmtInt(t.stops_within_radius)],
+      ["Note", fmtNA(t.note)],
+    ]));
+
+    // Notes (API failures / rate limits)
+    const notes = j.notes || {};
+    const noteKeys = Object.keys(notes);
+    if (noteKeys.length > 0) {
+      const noteCard = document.createElement("div");
+      noteCard.className = "card";
+
+      const nh = document.createElement("h3");
+      nh.textContent = "Notes (data source issues)";
+      noteCard.appendChild(nh);
+
+      const ul = document.createElement("ul");
+      for (const k of noteKeys) {
+        const li = document.createElement("li");
+        li.textContent = `${k}: ${notes[k]}`;
+        ul.appendChild(li);
+      }
+      noteCard.appendChild(ul);
+
+      content.appendChild(noteCard);
+    }
+  }
+
   async function fetchFeatures(lat, lon) {
     const radius = 500;
 
-    // 前端也做网格化，减少重复请求
+    // 网格化：减少重复请求
     const key = `${lat.toFixed(3)},${lon.toFixed(3)},${radius}`;
     if (key === lastKey) return;
     lastKey = key;
 
-    document.getElementById('meta').innerText = `lat=${lat.toFixed(5)}, lon=${lon.toFixed(5)}, r=${radius}m`;
+    document.getElementById('meta').innerText =
+      `lat=${lat.toFixed(5)}, lon=${lon.toFixed(5)}, r=${radius}m`;
 
     try {
       const res = await fetch(`/api/features?lat=${lat}&lon=${lon}&radius=${radius}`);
       const text = await res.text();
 
       if (!res.ok) {
-        document.getElementById('out').innerText = `HTTP ${res.status}\\n` + text;
+        document.getElementById('errors').textContent = `HTTP ${res.status}\\n${text}`;
         return;
       }
 
-      try {
-        const j = JSON.parse(text);
-        document.getElementById('out').innerText = JSON.stringify(j, null, 2);
-      } catch (e) {
-        document.getElementById('out').innerText = `JSON parse error: ${e}\\n` + text;
-      }
+      const j = JSON.parse(text);
+      renderFeatures(j);
     } catch (e) {
-      document.getElementById('out').innerText = String(e);
+      document.getElementById('errors').textContent = String(e);
     }
   }
 
@@ -396,13 +557,12 @@ INDEX_HTML = """
     timer = setTimeout(() => fetchFeatures(lat, lon), 300);
   }
 
-  map.on('mousemove', (e) => {
-    debounce(e.latlng.lat, e.latlng.lng);
-  });
+  map.on('mousemove', (e) => debounce(e.latlng.lat, e.latlng.lng));
 </script>
 </body>
 </html>
 """
+
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -412,3 +572,4 @@ def index():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
